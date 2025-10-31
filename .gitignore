@@ -1,5 +1,6 @@
 # Environment and configuration files
 .env
+.env.local
 config.json
 config.yml
 config.yaml

@@ -30,6 +30,27 @@ class Config:
         self._config: Dict[str, Any] = {}
         self._load_config()
 
+    def _load_json_env(self, env_var: str, default: Any = None) -> Any:
+        """
+        Load and parse JSON from environment variable
+
+        Args:
+            env_var: Environment variable name
+            default: Default value if variable not found or parsing fails
+
+        Returns:
+            Parsed JSON value or default
+        """
+        value = os.getenv(env_var)
+        if not value:
+            return default
+
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as e:
+            print(f"Warning: Failed to parse JSON from {env_var}: {e}")
+            return default
+
     def _load_config(self):
         """Load configuration from .env file or environment variables"""
         # Try to load .env file first
@@ -81,11 +102,19 @@ class Config:
                 ),  # For Azure, model is the deployment name
             }
 
+        # Load mock data from environment variables (as JSON strings)
+        mock_test = self._load_json_env("MOCK_TEST_DATA", {})
+        mock_file = self._load_json_env("MOCK_FILE_DATA", {})
+
         self._config = {
             "llm": llm_config,
             "agent": {
                 "name": os.getenv("AGENT_NAME", "simple_langgraph_agent"),
                 "version": os.getenv("AGENT_VERSION", "1.0.0"),
+            },
+            "mock": {
+                "test": mock_test,
+                "file": mock_file,
             },
         }
 
@@ -120,6 +149,11 @@ class Config:
     def agent_config(self) -> Dict[str, Any]:
         """Get agent configuration"""
         return self._config.get("agent", {})
+
+    @property
+    def mock_config(self) -> Dict[str, Any]:
+        """Get mock data configuration"""
+        return self._config.get("mock", {})
 
     def validate(self) -> bool:
         """

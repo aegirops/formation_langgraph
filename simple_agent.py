@@ -3,7 +3,8 @@ Simple LangGraph Agent for CI/CD Testing
 
 This agent has:
 - A state with short-term memory
-- A single node that calls an LLM (Azure OpenAI or vLLM) to say "Hello!"
+- An initialization node that populates mock data (test and file info)
+- An LLM node that calls Azure OpenAI or vLLM
 - Minimal configuration for easy testing
 - Secure configuration from .env file
 """
@@ -42,6 +43,40 @@ class AgentState(TypedDict):
     test: TestInfo
 
     file: FileInfo
+
+
+def init_state_node(state: AgentState) -> AgentState:
+    """
+    Initialize the state with mock data for testing
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        Updated state with mock test and file information
+    """
+    # Load configuration
+    config = get_config()
+    mock_config = config.mock_config
+
+    # Get mock data from configuration or use defaults
+    mock_test = mock_config.get("test", {})
+    if not mock_test:
+        # Default mock test data if not configured
+        mock_test = {
+            "name": "test_user_authentication",
+            "log": "Test passed: User authentication successful with valid credentials",
+        }
+
+    mock_file = mock_config.get("file", {})
+    if not mock_file:
+        # Default mock file data if not configured
+        mock_file = {
+            "name": "auth_service.py",
+            "content": "def authenticate(user, password):\n    return validate_credentials(user, password)",
+        }
+
+    return {"test": mock_test, "file": mock_file}
 
 
 def llm_node(state: AgentState) -> AgentState:
@@ -88,7 +123,7 @@ def llm_node(state: AgentState) -> AgentState:
     return {"messages": messages + [response], "output": response.content}
 
 
-def create_agent():
+def create_agent_workflow():
     """
     Create and compile the LangGraph agent
 
@@ -98,11 +133,13 @@ def create_agent():
     # Create the graph
     workflow = StateGraph(AgentState)
 
-    # Add the single LLM node
+    # Add nodes
+    workflow.add_node("init_state", init_state_node)
     workflow.add_node("llm", llm_node)
 
-    # Define the flow: START -> llm -> END
-    workflow.add_edge(START, "llm")
+    # Define the flow: START -> init_state -> llm -> END
+    workflow.add_edge(START, "init_state")
+    workflow.add_edge("init_state", "llm")
     workflow.add_edge("llm", END)
 
     # Compile the graph
@@ -119,7 +156,7 @@ def run_agent():
         The agent's response
     """
     # Create the agent
-    agent = create_agent()
+    agent = create_agent_workflow()
 
     # Initial state with a test message
     initial_state = {
@@ -196,6 +233,15 @@ if __name__ == "__main__":
         for i, msg in enumerate(result["messages"], 1):
             msg_type = "Human" if isinstance(msg, HumanMessage) else "AI"
             print(f"  {i}. [{msg_type}] {msg.content}")
+
+        # Display mock data
+        print(f"\nMock Test Info:")
+        print(f"  Name: {result['test']['name']}")
+        print(f"  Log: {result['test']['log']}")
+
+        print(f"\nMock File Info:")
+        print(f"  Name: {result['file']['name']}")
+        print(f"  Content: {result['file']['content'][:50]}...")
 
         print("\n" + "-" * 50)
         print("✓ CI/CD Test: PASSED")
