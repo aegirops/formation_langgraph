@@ -16,12 +16,32 @@ from langchain_core.messages import HumanMessage, AIMessage
 from config_loader import get_config
 
 
+# Define nested state structures
+class TestInfo(TypedDict):
+    """Test information"""
+
+    name: str
+    log: str
+
+
+class FileInfo(TypedDict):
+    """File information"""
+
+    name: str
+    content: str
+
+
 # Define the state structure with short-term memory
 class AgentState(TypedDict):
     """State with short-term memory for the agent"""
 
     messages: Annotated[list, "The conversation history"]
+
     output: str
+
+    test: TestInfo
+
+    file: FileInfo
 
 
 def llm_node(state: AgentState) -> AgentState:
@@ -58,7 +78,7 @@ def llm_node(state: AgentState) -> AgentState:
             max_tokens=llm_config.get("max_tokens", 1000),
         )
 
-    # Get the current messages from state
+    # # Get the current messages from state
     messages = state.get("messages", [])
 
     # Call the LLM
@@ -105,6 +125,8 @@ def run_agent():
     initial_state = {
         "messages": [HumanMessage(content="What model are you using ?")],
         "output": "",
+        "test": {},
+        "file": {},
     }
 
     # Run the agent
