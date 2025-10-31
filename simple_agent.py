@@ -5,15 +5,18 @@ This agent has:
 - A state with short-term memory
 - An initialization node that populates mock data (test and file info)
 - An LLM analysis node that analyzes test log information
+- A notification node that posts analysis to Microsoft Teams via webhook
 - Minimal configuration for easy testing
 - Secure configuration from .env file
 """
 
 import os
+import requests
 from typing import TypedDict, Annotated
 from langgraph.graph import StateGraph, START, END
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.tools import tool
 from config_loader import get_config
 
 
@@ -45,6 +48,53 @@ class AgentState(TypedDict):
     log_analysis: str
 
     file: FileInfo
+
+    notification_status: str
+
+
+# Define the Teams notification tool
+@tool
+def teams_notification_tool(message: str) -> str:
+    """
+    Post a notification message to Microsoft Teams via webhook.
+
+    Args:
+        message: The message content to send to Teams
+
+    Returns:
+        Status message indicating success or failure
+    """
+    webhook_url = os.getenv("TEAMS_WEBHOOK_URL", "")
+
+    if not webhook_url:
+        return "Error: TEAMS_WEBHOOK_URL not configured in environment variables"
+
+    # TMP: Remove this when we have a proper message format
+    payload = {
+        "type": "message",
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                    "type": "AdaptiveCard",
+                    "body": [{"type": "TextBlock", "text": message, "wrap": True}],
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "version": "1.4",
+                },
+            }
+        ],
+    }
+
+    try:
+        response = requests.post(webhook_url, json=payload)
+
+        if response.status_code == 200:
+            return "✓ Successfully posted notification to Teams"
+        else:
+            return f"✗ Failed to post to Teams. Status code: {response.status_code}"
+
+    except Exception as e:
+        return f"✗ Error posting to Teams: {str(e)}"
 
 
 def init_state_node(state: AgentState) -> AgentState:
@@ -137,6 +187,98 @@ Donne moi la synthèse en Markdown."""
     }
 
 
+def notify_node(state: AgentState) -> AgentState:
+    """
+    LLM node that uses the teams_notification_tool to send log analysis to Teams.
+    The LLM will decide whether and how to use the tool based on the context.
+
+    Args:
+        state: Current agent state with log analysis data
+
+    Returns:
+        Updated state with notification status
+    """
+    # Load configuration
+    config = get_config()
+    llm_config = config.llm_config
+    provider = llm_config.get("provider", "azure")
+
+    # Initialize LLM based on provider
+    if provider == "vllm":
+        llm = ChatOpenAI(
+            model=llm_config.get("model"),
+            base_url=llm_config.get("base_url"),
+            api_key=llm_config.get("api_key"),
+            temperature=llm_config.get("temperature", 0.7),
+            max_tokens=llm_config.get("max_tokens", 1000),
+        )
+    else:  # azure (default)
+        llm = AzureChatOpenAI(
+            azure_deployment=llm_config.get("deployment_name"),
+            azure_endpoint=llm_config.get("azure_endpoint"),
+            api_key=llm_config.get("api_key"),
+            api_version=llm_config.get("api_version", "2024-08-01-preview"),
+            temperature=llm_config.get("temperature", 0.7),
+            max_tokens=llm_config.get("max_tokens", 1000),
+        )
+
+    # Bind the tool to the LLM
+    # For vLLM, explicitly set tool_choice to a named tool or "none"
+    # vLLM accepts: named tool, "auto", or "none" (not "required")
+    if provider == "vllm":
+        # Use the tool name directly to force its usage
+        llm_with_tools = llm.bind_tools(
+            [teams_notification_tool], tool_choice="teams_notification_tool"
+        )
+    else:
+        # Azure OpenAI supports "auto" mode by default
+        llm_with_tools = llm.bind_tools([teams_notification_tool])
+
+    # Get log analysis from state
+    log_analysis = state.get("log_analysis", "No analysis available")
+
+    # Create notification prompt
+    notification_prompt = f"""Tu as généré une analyse de logs de tests. Utilise l'outil teams_notification_tool pour envoyer cette analyse à Microsoft Teams.
+
+Analyse des logs:
+{log_analysis}
+
+Poste cette analyse sur Teams en utilisant l'outil disponible."""
+
+    # Get the current messages from state
+    messages = state.get("messages", [])
+
+    # Add the notification prompt
+    messages_with_prompt = messages + [HumanMessage(content=notification_prompt)]
+
+    # Call the LLM with tools
+    response = llm_with_tools.invoke(messages_with_prompt)
+
+    # Check if the LLM wants to use the tool
+    notification_status = "No notification sent"
+    updated_messages = messages_with_prompt + [response]
+
+    if response.tool_calls:
+        # Execute the tool calls
+        for tool_call in response.tool_calls:
+            if tool_call["name"] == "teams_notification_tool":
+                # Execute the tool
+                tool_result = teams_notification_tool.invoke(tool_call["args"])
+                notification_status = tool_result
+
+                # Add tool result to messages
+                tool_message = ToolMessage(
+                    content=tool_result, tool_call_id=tool_call["id"]
+                )
+                updated_messages.append(tool_message)
+
+    # Update state with notification status
+    return {
+        "messages": updated_messages,
+        "notification_status": notification_status,
+    }
+
+
 def create_agent_workflow():
     """
     Create and compile the LangGraph agent
@@ -150,11 +292,13 @@ def create_agent_workflow():
     # Add nodes
     workflow.add_node("init_state", init_state_node)
     workflow.add_node("llm_analysis", llm_analysis_node)
+    workflow.add_node("notify", notify_node)
 
-    # Define the flow: START -> init_state -> llm_analysis -> END
+    # Define the flow: START -> init_state -> llm_analysis -> notify -> END
     workflow.add_edge(START, "init_state")
     workflow.add_edge("init_state", "llm_analysis")
-    workflow.add_edge("llm_analysis", END)
+    workflow.add_edge("llm_analysis", "notify")
+    workflow.add_edge("notify", END)
 
     # Compile the graph
     agent = workflow.compile()
@@ -256,6 +400,9 @@ if __name__ == "__main__":
         print(f"\nMock File Info:")
         print(f"  Name: {result['file']['name']}")
         print(f"  Content: {result['file']['content'][:50]}...")
+
+        print(f"\nNotification Status:")
+        print(f"  {result.get('notification_status', 'No status available')}")
 
         print("\n" + "-" * 50)
         print("✓ CI/CD Test: PASSED")
