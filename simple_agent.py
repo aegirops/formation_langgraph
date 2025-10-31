@@ -3,15 +3,15 @@ Simple LangGraph Agent for CI/CD Testing
 
 This agent has:
 - A state with short-term memory
-- A single node that calls an LLM to say "Hello!"
+- A single node that calls an LLM (Azure OpenAI or vLLM) to say "Hello!"
 - Minimal configuration for easy testing
-- Secure configuration from config.json (gitignored)
+- Secure configuration from .env file
 """
 
 import os
 from typing import TypedDict, Annotated
 from langgraph.graph import StateGraph, START, END
-from langchain_openai import ChatOpenAI, AzureChatOpenAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
 from config_loader import get_config
 
@@ -37,10 +37,18 @@ def llm_node(state: AgentState) -> AgentState:
     # Load configuration
     config = get_config()
     llm_config = config.llm_config
-    provider = llm_config.get("provider", "openai")
+    provider = llm_config.get("provider", "azure")
 
-    # Initialize the LLM based on provider
-    if provider == "azure":
+    # Initialize LLM based on provider
+    if provider == "vllm":
+        llm = ChatOpenAI(
+            model=llm_config.get("model"),
+            base_url=llm_config.get("base_url"),
+            api_key=llm_config.get("api_key"),
+            temperature=llm_config.get("temperature", 0.7),
+            max_tokens=llm_config.get("max_tokens", 1000),
+        )
+    else:  # azure (default)
         llm = AzureChatOpenAI(
             azure_deployment=llm_config.get("deployment_name"),
             azure_endpoint=llm_config.get("azure_endpoint"),
@@ -48,15 +56,6 @@ def llm_node(state: AgentState) -> AgentState:
             api_version=llm_config.get("api_version", "2024-08-01-preview"),
             temperature=llm_config.get("temperature", 0.7),
             max_tokens=llm_config.get("max_tokens", 1000),
-        )
-    else:
-        # Default to OpenAI
-        llm = ChatOpenAI(
-            model=llm_config.get("model", "gpt-3.5-turbo"),
-            temperature=llm_config.get("temperature", 0.7),
-            max_tokens=llm_config.get("max_tokens", 1000),
-            api_key=llm_config.get("api_key"),
-            base_url=llm_config.get("api_base"),
         )
 
     # Get the current messages from state
@@ -103,7 +102,10 @@ def run_agent():
     agent = create_agent()
 
     # Initial state with a test message
-    initial_state = {"messages": [HumanMessage(content="Say Hello!")], "output": ""}
+    initial_state = {
+        "messages": [HumanMessage(content="What model are you using ?")],
+        "output": "",
+    }
 
     # Run the agent
     result = agent.invoke(initial_state)
@@ -125,10 +127,17 @@ if __name__ == "__main__":
 
     # Load and validate configuration
     config = get_config()
+    provider = config.get("llm.provider", "azure")
+
     print(f"\nConfiguration loaded:")
-    print(f"  Provider: {config.get('llm.provider')}")
-    print(f"  Model: {config.get('llm.model')}")
-    print(f"  API Base: {config.get('llm.api_base')}")
+    print(f"  Provider: {provider.upper()}")
+
+    if provider == "vllm":
+        print(f"  Model: {config.get('llm.model')}")
+        print(f"  Base URL: {config.get('llm.base_url')}")
+    else:
+        print(f"  Deployment: {config.get('llm.deployment_name')}")
+        print(f"  Endpoint: {config.get('llm.azure_endpoint')}")
     print()
 
     if not config.validate():
@@ -136,9 +145,20 @@ if __name__ == "__main__":
         print("\nTo fix this:")
         print("1. Copy env.example to .env:")
         print("   cp env.example .env")
-        print("2. Edit .env and add your OPENAI_API_KEY")
-        print("\nOr export the environment variable:")
-        print("   export OPENAI_API_KEY='your_api_key_here'")
+        print("2. Edit .env and add your LLM credentials")
+
+        if provider == "vllm":
+            print("\nFor vLLM, export these environment variables:")
+            print("   export LLM_PROVIDER='vllm'")
+            print("   export VLLM_MODEL='MY_MODEL_NAME'")
+            print("   export VLLM_BASE_URL='https://your-endpoint.com/v1'")
+            print("   export VLLM_API_KEY='your_api_key_here'")
+        else:
+            print("\nFor Azure OpenAI, export these environment variables:")
+            print("   export AZURE_OPENAI_API_KEY='your_api_key_here'")
+            print("   export AZURE_OPENAI_ENDPOINT='your_endpoint_here'")
+            print("   export AZURE_OPENAI_DEPLOYMENT='your_deployment_here'")
+
         print("\n" + "-" * 50)
         print("✗ CI/CD Test: FAILED")
         exit(1)

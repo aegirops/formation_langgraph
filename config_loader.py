@@ -1,7 +1,9 @@
 """
 Configuration loader for LangGraph Agent
 
-Configured to use Azure OpenAI exclusively.
+Supports multiple LLM providers:
+- Azure OpenAI
+- vLLM (OpenAI-compatible endpoints)
 
 Supports loading configuration from:
 1. .env file (primary method)
@@ -47,14 +49,27 @@ class Config:
             print("✓ Using environment variables for configuration")
 
         # Build configuration from environment variables
-        # Always use Azure OpenAI as the provider
-        provider = "azure"
+        # Get provider from environment (default: azure)
+        provider = os.getenv("LLM_PROVIDER", "azure").lower()
 
-        self._config = {
-            "llm": {
-                "provider": provider,
-                "temperature": float(os.getenv("LLM_TEMPERATURE", "0.7")),
-                "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "1000")),
+        # Common configuration
+        base_config = {
+            "provider": provider,
+            "temperature": float(os.getenv("LLM_TEMPERATURE", "0.7")),
+            "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "1000")),
+        }
+
+        # Provider-specific configuration
+        if provider == "vllm":
+            llm_config = {
+                **base_config,
+                "model": os.getenv("VLLM_MODEL", ""),
+                "base_url": os.getenv("VLLM_BASE_URL", ""),
+                "api_key": os.getenv("VLLM_API_KEY", ""),
+            }
+        else:  # azure (default)
+            llm_config = {
+                **base_config,
                 "api_key": os.getenv("AZURE_OPENAI_API_KEY", ""),
                 "azure_endpoint": os.getenv("AZURE_OPENAI_ENDPOINT", ""),
                 "api_version": os.getenv(
@@ -64,7 +79,10 @@ class Config:
                 "model": os.getenv(
                     "AZURE_OPENAI_DEPLOYMENT_NAME", ""
                 ),  # For Azure, model is the deployment name
-            },
+            }
+
+        self._config = {
+            "llm": llm_config,
             "agent": {
                 "name": os.getenv("AGENT_NAME", "simple_langgraph_agent"),
                 "version": os.getenv("AGENT_VERSION", "1.0.0"),
@@ -110,40 +128,80 @@ class Config:
         Returns:
             True if valid, False otherwise
         """
-        # Always validate for Azure OpenAI
-        required_keys = [
-            "llm.api_key",
-            "llm.azure_endpoint",
-            "llm.api_version",
-            "llm.deployment_name",
-        ]
-        placeholder_values = [
-            "your_azure_api_key_here",
-            "https://your-resource-name.openai.azure.com",
-            "your-deployment-name",
-        ]
+        provider = self.get("llm.provider", "azure")
 
-        missing_keys = []
-        for key in required_keys:
-            value = self.get(key)
-            if (
-                not value
-                or value == ""
-                or any(str(value) == placeholder for placeholder in placeholder_values)
-            ):
-                missing_keys.append(key)
+        if provider == "vllm":
+            # Validate vLLM configuration
+            required_keys = ["llm.model", "llm.base_url", "llm.api_key"]
+            placeholder_values = [
+                "your_vllm_api_key_here",
+                "https://your-vllm-endpoint.com/v1",
+            ]
 
-        if missing_keys:
-            print(
-                f"✗ Missing required configuration keys for Azure OpenAI: {', '.join(missing_keys)}"
-            )
-            print(f"   Please set these in your .env file or as environment variables")
-            print(f"   Required for Azure OpenAI:")
-            print(f"   - AZURE_OPENAI_API_KEY")
-            print(f"   - AZURE_OPENAI_ENDPOINT")
-            print(f"   - AZURE_OPENAI_API_VERSION")
-            print(f"   - AZURE_OPENAI_DEPLOYMENT_NAME")
-            return False
+            missing_keys = []
+            for key in required_keys:
+                value = self.get(key)
+                if (
+                    not value
+                    or value == ""
+                    or any(
+                        str(value) == placeholder for placeholder in placeholder_values
+                    )
+                ):
+                    missing_keys.append(key)
+
+            if missing_keys:
+                print(
+                    f"✗ Missing required configuration keys for vLLM: {', '.join(missing_keys)}"
+                )
+                print(
+                    f"   Please set these in your .env file or as environment variables"
+                )
+                print(f"   Required for vLLM:")
+                print(f"   - VLLM_MODEL (e.g., 'MY_MODEL_NAME')")
+                print(f"   - VLLM_BASE_URL (e.g., 'https://your-endpoint.com/v1')")
+                print(f"   - VLLM_API_KEY")
+                return False
+
+        else:  # azure (default)
+            # Validate Azure OpenAI configuration
+            required_keys = [
+                "llm.api_key",
+                "llm.azure_endpoint",
+                "llm.api_version",
+                "llm.deployment_name",
+            ]
+            placeholder_values = [
+                "your_azure_api_key_here",
+                "https://your-resource-name.openai.azure.com",
+                "your-deployment-name",
+            ]
+
+            missing_keys = []
+            for key in required_keys:
+                value = self.get(key)
+                if (
+                    not value
+                    or value == ""
+                    or any(
+                        str(value) == placeholder for placeholder in placeholder_values
+                    )
+                ):
+                    missing_keys.append(key)
+
+            if missing_keys:
+                print(
+                    f"✗ Missing required configuration keys for Azure OpenAI: {', '.join(missing_keys)}"
+                )
+                print(
+                    f"   Please set these in your .env file or as environment variables"
+                )
+                print(f"   Required for Azure OpenAI:")
+                print(f"   - AZURE_OPENAI_API_KEY")
+                print(f"   - AZURE_OPENAI_ENDPOINT")
+                print(f"   - AZURE_OPENAI_API_VERSION")
+                print(f"   - AZURE_OPENAI_DEPLOYMENT_NAME")
+                return False
 
         print("✓ Configuration validated successfully")
         return True
