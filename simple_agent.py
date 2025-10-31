@@ -57,24 +57,17 @@ def init_state_node(state: AgentState) -> AgentState:
     """
     # Load configuration
     config = get_config()
-    mock_config = config.mock_config
 
     # Get mock data from configuration or use defaults
-    mock_test = mock_config.get("test", {})
-    if not mock_test:
-        # Default mock test data if not configured
-        mock_test = {
-            "name": "test_user_authentication",
-            "log": "Test passed: User authentication successful with valid credentials",
-        }
+    mock_test = {
+        "name": "test_log",
+        "log": os.getenv("MOCK_TEST_DATA", ""),
+    }
 
-    mock_file = mock_config.get("file", {})
-    if not mock_file:
-        # Default mock file data if not configured
-        mock_file = {
-            "name": "auth_service.py",
-            "content": "def authenticate(user, password):\n    return validate_credentials(user, password)",
-        }
+    mock_file = {
+        "name": "auth_service.py",
+        "content": os.getenv("MOCK_TEST_FILE", ""),
+    }
 
     return {"test": mock_test, "file": mock_file}
 
