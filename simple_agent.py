@@ -4,7 +4,7 @@ Simple LangGraph Agent for CI/CD Testing
 This agent has:
 - A state with short-term memory
 - An initialization node that populates mock data (test and file info)
-- An LLM node that calls Azure OpenAI or vLLM
+- An LLM analysis node that analyzes test log information
 - Minimal configuration for easy testing
 - Secure configuration from .env file
 """
@@ -42,6 +42,8 @@ class AgentState(TypedDict):
 
     test: TestInfo
 
+    log_analysis: str
+
     file: FileInfo
 
 
@@ -72,15 +74,15 @@ def init_state_node(state: AgentState) -> AgentState:
     return {"test": mock_test, "file": mock_file}
 
 
-def llm_node(state: AgentState) -> AgentState:
+def llm_analysis_node(state: AgentState) -> AgentState:
     """
-    Single node that calls an LLM to say Hello!
+    Node that calls an LLM to analyze the test log information from the state
 
     Args:
-        state: Current agent state with messages
+        state: Current agent state with test log data
 
     Returns:
-        Updated state with LLM response
+        Updated state with LLM analysis response
     """
     # Load configuration
     config = get_config()
@@ -106,14 +108,33 @@ def llm_node(state: AgentState) -> AgentState:
             max_tokens=llm_config.get("max_tokens", 1000),
         )
 
-    # # Get the current messages from state
+    # Get test log from state
+    test_info = state.get("test", {})
+    test_log = test_info.get("log", "No test log available")
+
+    # Create analysis prompt
+    analysis_prompt = f"""Fait moi une synthèse des différents cas de test qui FAIL:
+
+Test Log:
+{test_log}
+
+Donne moi la synthèse en Markdown."""
+
+    # Get the current messages from state
     messages = state.get("messages", [])
 
+    # Add the analysis prompt as a new message
+    messages_with_prompt = messages + [HumanMessage(content=analysis_prompt)]
+
     # Call the LLM
-    response = llm.invoke(messages)
+    response = llm.invoke(messages_with_prompt)
 
     # Update state with the response
-    return {"messages": messages + [response], "output": response.content}
+    return {
+        "messages": messages_with_prompt + [response],
+        "output": response.content,
+        "log_analysis": response.content,
+    }
 
 
 def create_agent_workflow():
@@ -128,12 +149,12 @@ def create_agent_workflow():
 
     # Add nodes
     workflow.add_node("init_state", init_state_node)
-    workflow.add_node("llm", llm_node)
+    workflow.add_node("llm_analysis", llm_analysis_node)
 
-    # Define the flow: START -> init_state -> llm -> END
+    # Define the flow: START -> init_state -> llm_analysis -> END
     workflow.add_edge(START, "init_state")
-    workflow.add_edge("init_state", "llm")
-    workflow.add_edge("llm", END)
+    workflow.add_edge("init_state", "llm_analysis")
+    workflow.add_edge("llm_analysis", END)
 
     # Compile the graph
     agent = workflow.compile()
@@ -153,7 +174,7 @@ def run_agent():
 
     # Initial state with a test message
     initial_state = {
-        "messages": [HumanMessage(content="What model are you using ?")],
+        "messages": [],
         "output": "",
         "test": {},
         "file": {},
